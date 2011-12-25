@@ -1,0 +1,131 @@
+#!/usr/bin/env zsh
+
+# Backups up a btrfs subvolume using tarsnap (www.tarsnap.com). This
+# script is not affiliated with tarsnap.
+
+set -e
+set -u
+
+SYSLOG_FACILITY="local0"
+TARSNAP_OPTS=${TARSNAP_OPTS:=""}
+TARSNAP_CACHE=${TARSNAP_CACHE:="/var/cache/tarsnap-cache"}
+TARSNAP_KEY=${TARSNAP_KEY:="/root/tarsnap.key"}
+ALERT_RECIPIENTS=${ALERT_RECIPIENTS:=""}
+
+function timestamp {
+    date "+%Y-%m-%dT%H:%M:%S"
+}
+
+function notice {
+    logger -t btrsnap -p ${SYSLOG_FACILITY}.notice -- $*
+}
+
+function error {
+    logger -t btrsnap -p ${SYSLOG_FACILITY}.err -- $*
+}
+
+function die {
+    error $*
+    exit 1
+}
+
+function snap {
+    local subvol=$1
+
+    if ! (echo $subvol | egrep '^[0-9a-zA-Z_/-]+$' >/dev/null)
+    then
+	# I don't want to bother trying to be safe in a shell script
+	# against spaces, quotes and whatever else.
+	die "the path '$subvol' contains characters we are too chicken to handle"
+    fi
+
+    local archname="$(timestamp)-$(hostname)-$subvol"
+
+    notice "backing up $subvol to archive $archname"
+
+    local btrsnap_dir="$subvol/.btrsnap"
+    local snapshot_dir="$btrsnap_dir/snapshot"
+    local snapshot_btrsnap_dir="$snapshot_dir/.btrsnap"
+    local touch_path="$btrsnap_dir/touched"
+
+    mkdir -p $btrsnap_dir
+    mkdir -p $TARSNAP_CACHE
+    chmod 700 $TARSNAP_CACHE
+    touch $touch_path
+    sleep 2 # sleep a good while because mtime granularity is unknown
+
+    if [ -e $snapshot_dir ]
+    then
+	btrfs subvolume delete $snapshot_dir 2>&1 | logger -t btrsnap/btrfs -p ${SYSLOG_FACILITY}.info
+	if ! [ "$pipestatus[1]" = "0" ] ; then error "failed to delete pre-existing btrfs snapshot" ; return 1 ; fi
+    fi
+
+    btrfs subvolume snapshot $subvol $snapshot_dir 2>&1 | logger -t btrsnap/btrfs -p ${SYSLOG_FACILITY}.info
+    if ! [ "$pipestatus[1]" = "0" ] ; then error error "failed to create btrfs snapshot" ; return 1 ; fi
+
+    tarsnap ${=TARSNAP_OPTS} \
+	--keyfile $TARSNAP_KEY \
+	--quiet \
+	--one-file-system \
+	--cachedir $TARSNAP_CACHE \
+	--exclude $snapshot_btrsnap_dir \
+	-cf $archname $snapshot_dir \
+	2>&1 | logger -t btrsnap/tarsnap -p${SYSLOG_FACILITY}.info
+    if ! [ "$pipestatus[1]" = "0" ] ; then error "tarsnap invokation failed" ; return 1 ; fi
+
+    btrfs subvolume delete $snapshot_dir 2>^1 | logger -t btrsnap/btrfs -p ${SYSLOG_FACILITY}.info
+    if ! [ "$pipestatus[1]" = "0" ] ; then error "failed to delete btrfs snapshot" ; return 1 ; fi
+    notice "successfully backed up $subvol to archive $archname"
+}
+
+function help {
+    echo "Usage: btrsnap <path-to-subvolume> [<path-to-subvolume> ...]"
+    echo ""
+    echo "NOTE: "
+    echo "  * btrsnap will write to <subvolpath>/.btrsnap."
+    echo "  * btrsnap will not recursively backup btrfs volumes; each volume must be separately backed up"
+    echo ""
+    echo "Environment variables and their current (possibly default) value:"
+    echo "  TARSNAP_KEY=$TARSNAP_KEY"
+    echo "  TARSNAP_CACHE=$TARSNAP_CACHE"
+    echo "  TARSNAP_OPTS=$TARSNAP_OPTS"
+    echo "  ALERT_RECIPIENTS=$ALERT_RECIPIENTS"
+}
+
+set +u
+if [ -z "$*" ];
+then
+    help
+    exit 1
+elif [ "$1" = "-h" ] || [ "$1" = "--help" ]
+then
+    help
+    exit 0
+fi
+set -u
+
+all_went_well="yes"
+function report_failure {
+    all_went_well="no"
+    error "failed to back up volume $1"
+    if ! [ -z "$ALERT_RECIPIENTS" ]
+    then
+	echo "(see syslog for details)" | mail -s "btrsnap/alert: backup of $(hostname):$1 failed" ${=ALERT_RECIPIENTS}
+    fi
+}
+
+function all_went_well {
+    [ "$all_went_well" = "yes" ]
+}
+
+for subvol in $*
+do
+    snap $subvol $* || report_failure $subvol
+done
+
+tarsnap --keyfile $TARSNAP_KEY --cachedir $TARSNAP_CACHE --humanize-numbers --print-stats 2>&1 | logger -t btrsnap/tarsnap-stats -p ${SYSLOG_FACILITY}.info
+
+all_went_well
+
+
+
