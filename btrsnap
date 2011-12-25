@@ -10,7 +10,7 @@ SYSLOG_FACILITY="local0"
 TARSNAP_OPTS=${TARSNAP_OPTS:=""}
 TARSNAP_CACHE=${TARSNAP_CACHE:="/var/cache/tarsnap-cache"}
 TARSNAP_KEY=${TARSNAP_KEY:="/root/tarsnap.key"}
-ALERT_RECIPIENTS=${ALERT_RECIPIENTS:=""}
+ALERT_RECIPIENTS=${ALERT_RECIPIENTS:="root"}
 
 function timestamp {
     date "+%Y-%m-%dT%H:%M:%S"
