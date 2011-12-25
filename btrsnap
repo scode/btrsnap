@@ -69,6 +69,7 @@ function snap {
 	--one-file-system \
 	--cachedir $TARSNAP_CACHE \
 	--exclude $snapshot_btrsnap_dir \
+        --snaptime $touch_path \
 	-cf $archname $snapshot_dir \
 	2>&1 | logger -t btrsnap/tarsnap -p${SYSLOG_FACILITY}.info
     if ! [ "$pipestatus[1]" = "0" ] ; then error "tarsnap invokation failed" ; return 1 ; fi
